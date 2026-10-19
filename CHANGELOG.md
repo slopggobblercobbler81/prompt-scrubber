@@ -1,5 +1,24 @@
 # @nanocollective/prompt-scrub
 
+# 1.5.0
+
+- feat: add built-in detectors for Credit Cards, SSN, IBAN, and IP Addresses (closes #89)
+
+> **Note:** Collision priority for shared shapes has shifted. CreditCard / IBAN / SSN / IPAddress detectors are inserted above Email / Url / Path / Phone / Address, so e.g. an IP embedded in a URL is now part of the Url finding (Url wins by span length) rather than a separate IpAddress entity.
+- Added structured observability to the proxy. `--audit-log <path>` appends one JSON line per request with counts, detector categories, timings and the request path. The file is created with mode `0600`. The proxy also serves `GET /healthz` and `GET /metrics` (Prometheus text, or JSON with `?format=json`), with redaction counts by category, latency, errors and passthrough. Pass `--no-metrics` to turn the endpoints off. Audit records and metrics never include values, bodies, headers or query strings. Closes #182.
+- The proxy now reloads `config.json` without a restart. Reloads run on `SIGHUP` and when the file changes on disk. Only `rulePacks` and `urlAllowlist` reload. An invalid config or a failing rule pack keeps the previous configuration. Pass `--no-reload-config` to turn this off. The proxy also applies the config-file `urlAllowlist` itself, as the `scrub` command does, so the allowlist can reload.
+- Fixed the **proxy** dropping messages and leaking PII in tool-calling conversations. `messages[]` was filtered by the presence of a `content` key, so an assistant turn that carries only `tool_calls` was deleted from the forwarded body and the upstream saw a tool result answering a call it had never been told about. Messages are now walked, never filtered: anything the proxy does not recognise is forwarded unchanged at its original position.
+
+The same pass now scrubs the fields tool-calling requests actually put text in, all of which were previously forwarded in the clear: Anthropic's top-level `system` prompt (string or text blocks), `tool_calls[].function.arguments`, `tool_use.input`, `tool_result` blocks, the `description` fields of `tools[]` and their JSON schemas, and the deprecated-but-still-accepted `function_call.arguments` / `functions[]`. Argument strings are parsed and scrubbed value by value, so argument keys and JSON structure survive untouched.
+
+Responses are rehydrated in the same places, since the client executes those tool calls on its own machine and needs the real values back. On a stream that includes holding a trailing partial placeholder back until the next fragment of the same call arrives: vendors emit roughly one token per event, so `«Email_1»` normally arrives in pieces, and resolving it only within a single event would have handed the caller's own code a literal placeholder most of the time.
+
+> **Note:** tool names, tool-call ids, schema property keys and `enum` values are deliberately left alone — the model must echo them back verbatim for the caller's dispatch to work. `tool_use.input` in an Anthropic *response* is now rehydrated, where previously it was left holding placeholders.
+
+Closes #163.
+
+- Fixed the **postal-address detector** redacting ordinary prose. Any number followed later in the sentence by a street suffix counted as an address, so `There are 42 things you should consider when walking down the st.` was flagged. The street name between the house number and the suffix is now limited to a few short words and can no longer run over a second number. `10 Downing St` and `1600 Pennsylvania Ave.` still match. Thanks to @RealBhupesh. Closes #86.
+
 # 1.4.0
 
 - Encrypt local session files at rest. A session file holds the placeholder -> original-value map, which is the most sensitive thing `prompt-scrub` writes to disk, and it sat there as plain JSON protected only by `0600` file permissions - so a stolen laptop, a synced backup or any other process running as the same user got the mappings in the clear. Setting `"encryptionEnabled": true` in the config file now makes every session write an AES-256-GCM envelope with a per-file random salt and IV, a 32-byte key derived through scrypt (`N=16384, r=8, p=1`), and a GCM auth tag that makes tampering detectable rather than silently decodable.
